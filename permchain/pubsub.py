@@ -44,8 +44,7 @@ class PubSub(Runnable[PubSubMessage | Any, PubSubMessage | Any], ABC):
     ) -> None:
         super().__init__()
 
-        self.lock = threading.Lock()
-        self.inflight_namespaces = set()
+        self.lock = threading.RLock()
 
         self.connection = connection
         self.processes = list(processes)
@@ -84,6 +83,8 @@ class PubSub(Runnable[PubSubMessage | Any, PubSubMessage | Any], ABC):
         assert len(input_value) == 1
         input_value = input_value[0]
 
+        print(f"_transform-input-{input_value}\n")
+
         # If input is a pubsub message, use its correlation_id,
         # otherwise use run_id (which is unique for each run)
         correlation_id = (
@@ -95,6 +96,9 @@ class PubSub(Runnable[PubSubMessage | Any, PubSubMessage | Any], ABC):
             input_value["correlation_value"]
             if is_pubsub_message(input_value)
             else input_value
+        )
+        input_topic = (
+            input_value["topic"] if is_pubsub_message(input_value) else INPUT_TOPIC
         )
 
         def send(topic: str, value: Any):
@@ -108,21 +112,28 @@ class PubSub(Runnable[PubSubMessage | Any, PubSubMessage | Any], ABC):
                 )
             )
 
+        print(f"_transform-corrid-{input_value}-{correlation_id}\n")
+
         # Check if this correlation_id is currently inflight. If so, raise an error,
         # as that would make the output iterator produce incorrect results.
-        with self.lock:
-            if correlation_id in self.inflight_namespaces:
-                raise RuntimeError(
-                    f"Cannot run {self} in namespace {correlation_id} "
-                    "because it is currently in use"
-                )
-            self.inflight_namespaces.add(correlation_id)
+        self.connection.connect(correlation_id)
+
+        print(f"_transform-connected-{input_value}\n")
+
+        # Create output iterator
+        output_iterator = self.connection.observe(correlation_id)
+
+        print(f"_transform-observe-{input_value}\n")
 
         # Send input to input topic
-        if is_pubsub_message(input_value):
-            send(input_value["topic"], input_value["value"])
-        else:
-            send(INPUT_TOPIC, input_value)
+        send(
+            input_topic,
+            input_value["value"] if is_pubsub_message(input_value) else input_value,
+        )
+
+        print(
+            f"_transform-send-{input_value}-{self.connection.inflight_size(correlation_id)}\n"
+        )
 
         with get_executor_for_config(config) as executor:
             # Track inflight futures
@@ -146,14 +157,16 @@ class PubSub(Runnable[PubSubMessage | Any, PubSubMessage | Any], ABC):
                         # Run each reducer once with the collected messages
                         if messages:
                             for process in processes:
-                                run_once(process, messages)
+                                lease = self.connection.inflight_start(correlation_id)
+                                run_once(process, messages, lease)
 
-                if not inflight:
+                if not self.connection.inflight_size(correlation_id):
                     self.connection.disconnect(correlation_id)
 
-            def check_if_idle(fut: Future) -> None:
+            def check_if_idle(lease: str, fut: Future) -> None:
                 """Cleanup after a process runs."""
-                inflight.discard(fut)
+                with self.lock:
+                    inflight.discard(fut)
 
                 try:
                     exc = fut.exception()
@@ -167,12 +180,14 @@ class PubSub(Runnable[PubSubMessage | Any, PubSubMessage | Any], ABC):
                 # Close output iterator if
                 # - all processes are done, or
                 # - an exception occurred
-                if not inflight or exc is not None:
+                self.connection.inflight_stop(correlation_id, lease)
+                if not self.connection.inflight_size(correlation_id) or exc is not None:
                     on_idle()
 
             def run_once(
                 process: RunnableSubscriber[Any] | RunnableReducer[Any],
                 messages: PubSubMessage | list[PubSubMessage],
+                lease: str,
             ) -> None:
                 """Run a process once."""
                 value = (
@@ -208,12 +223,14 @@ class PubSub(Runnable[PubSubMessage | Any, PubSubMessage | Any], ABC):
                     )
 
                     # Add callback to cleanup
-                    inflight.add(fut)
-                    fut.add_done_callback(check_if_idle)
+                    with self.lock:
+                        inflight.add(fut)
+
+                    fut.add_done_callback(partial(check_if_idle, lease))
                 except RuntimeError:
                     # If executor is now closed, just ignore this process
-                    # This could happen eg. if an OUT message was published durin
-                    # execution of run_once
+                    # This could happen eg. if an OUT message was published
+                    # during execution of run_once
                     pass
 
             # Listen on all subscribed topics
@@ -224,27 +241,30 @@ class PubSub(Runnable[PubSubMessage | Any, PubSubMessage | Any], ABC):
                     [partial(run_once, process) for process in processes],
                 )
 
+            if topic_name not in subscribers:
+                print(f"got to no subscribers {correlation_value}")
+                on_idle()
+
             try:
-                if inflight:
-                    # Yield output until all processes are done
-                    # This blocks the current thread, all other work needs to go
-                    # through the executor
-                    for chunk in self.connection.observe(correlation_id):
-                        yield chunk
-                        if chunk["topic"] == OUTPUT_TOPIC:
-                            # All expected output has been received, close
-                            self.connection.disconnect(correlation_id)
-                            break
-                else:
-                    on_idle()
+                # if topic_name in subscribers:
+                # Yield output until all processes are done
+                # This blocks the current thread, all other work needs to go
+                # through the executor
+                for chunk in output_iterator:
+                    yield chunk
+                    if chunk["topic"] == OUTPUT_TOPIC:
+                        # All expected output has been received, close
+                        break
+                # else:
+                #     print("got to no inflight")
+                #     on_idle()
             finally:
+                self.connection.disconnect(correlation_id)
+
+                print(f"{correlation_value}-yoooooooo")
                 # Cancel all inflight futures
                 while inflight:
                     inflight.pop().cancel()
-
-                # Remove namespace from inflight set
-                with self.lock:
-                    self.inflight_namespaces.remove(correlation_id)
 
                 # Raise exceptions if any
                 if exceptions:

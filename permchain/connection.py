@@ -23,7 +23,7 @@ def is_pubsub_message(obj: Any) -> TypeGuard[PubSubMessage]:
     )
 
 
-PubSubListener = Callable[[PubSubMessage], None]
+PubSubListener = Callable[[PubSubMessage, str], None]
 
 
 class PubSubConnection(ABC):
@@ -59,6 +59,15 @@ class PubSubConnection(ABC):
             None, self.listen, prefix, topic, listeners
         )
 
+    def inflight_start(self, prefix: str) -> None:
+        ...
+
+    def inflight_stop(self, prefix: str) -> None:
+        ...
+
+    def inflight_size(self, prefix: str) -> int:
+        ...
+
     @abstractmethod
     def send(self, message: PubSubMessage) -> None:
         ...
@@ -67,10 +76,19 @@ class PubSubConnection(ABC):
         return await asyncio.get_event_loop().run_in_executor(None, self.send, message)
 
     @abstractmethod
-    def disconnect(self, name: str) -> None:
+    def connect(self, prefix: str) -> None:
         ...
 
-    async def adisconnect(self, name: str) -> None:
+    async def aconnect(self, prefix: str) -> None:
         return await asyncio.get_event_loop().run_in_executor(
-            None, self.disconnect, name
+            None, self.connect, prefix
+        )
+
+    @abstractmethod
+    def disconnect(self, prefix: str) -> None:
+        ...
+
+    async def adisconnect(self, prefix: str) -> None:
+        return await asyncio.get_event_loop().run_in_executor(
+            None, self.disconnect, prefix
         )

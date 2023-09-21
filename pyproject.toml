@@ -9,7 +9,7 @@ repository = "https://www.github.com/langchain-ai/permchain"
 
 [tool.poetry.dependencies]
 python = ">=3.8.1,<4.0"
-langchain = "^0.0.286"
+langchain = {path = "../langchain/libs/langchain", develop = true}
 
 
 [tool.poetry.group.test.dependencies]
