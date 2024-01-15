@@ -1,7 +1,9 @@
 from typing import Any, Iterator, Mapping, Optional, Sequence, Union
 
 from langgraph.channels.base import BaseChannel
+from langgraph.checkpoint.base import Checkpoint
 from langgraph.pregel.log import logger
+from langgraph.pregel.reserved import ReservedChannels
 
 
 def map_input(
@@ -17,6 +19,8 @@ def map_input(
         if not isinstance(chunk, dict):
             raise TypeError(f"Expected chunk to be a dict, got {type(chunk).__name__}")
         for k in chunk:
+            if k == ReservedChannels.id:
+                continue
             if k in input_channels:
                 yield (k, chunk[k])
             else:
@@ -27,6 +31,7 @@ def map_output(
     output_channels: Union[str, Sequence[str]],
     pending_writes: Sequence[tuple[str, Any]],
     channels: Mapping[str, BaseChannel],
+    checkpoint: Optional[Checkpoint],
 ) -> Optional[Union[dict[str, Any], Any]]:
     """Map pending writes (a sequence of tuples (channel, value)) to output chunk."""
     if isinstance(output_channels, str):
@@ -34,5 +39,8 @@ def map_output(
             return channels[output_channels].get()
     else:
         if updated := {c for c, _ in pending_writes if c in output_channels}:
-            return {chan: channels[chan].get() for chan in updated}
+            output = {chan: channels[chan].get() for chan in updated}
+            if checkpoint is not None:
+                output[ReservedChannels.id] = checkpoint.id
+            return output
     return None

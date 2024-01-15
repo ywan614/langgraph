@@ -233,6 +233,7 @@ class Pregel(
         *,
         input_keys: Optional[Union[str, Sequence[str]]] = None,
         output_keys: Optional[Union[str, Sequence[str]]] = None,
+        checkpoint_id: Optional[str] = None,
     ) -> Iterator[Union[dict[str, Any], Any]]:
         if config["recursion_limit"] < 1:
             raise ValueError("recursion_limit must be at least 1")
@@ -244,7 +245,9 @@ class Pregel(
         # copy nodes to ignore mutations during execution
         processes = {**self.nodes}
         # get checkpoint from saver, or create an empty one
-        checkpoint = self.checkpointer.get(config) if self.checkpointer else None
+        checkpoint = (
+            self.checkpointer.get(config, checkpoint_id) if self.checkpointer else None
+        )
         checkpoint = checkpoint or empty_checkpoint()
         # create channels from checkpoint
         with ChannelsManager(
@@ -318,21 +321,27 @@ class Pregel(
                 if self.debug:
                     print_checkpoint(step, channels)
 
+                # save end of step checkpoint
+                checkpoint = create_checkpoint(checkpoint, channels)
+                if (
+                    self.checkpointer is not None
+                    and self.checkpointer.at == CheckpointAt.END_OF_STEP
+                ):
+                    self.checkpointer.put(config, checkpoint)
+
                 # yield current value and checkpoint view
-                if step_output := map_output(output_keys, pending_writes, channels):
+                if step_output := map_output(
+                    output_keys,
+                    pending_writes,
+                    channels,
+                    checkpoint if self.checkpointer is not None else None,
+                ):
                     yield step_output
                     # we can detect updates when output is multiple channels (ie. dict)
                     if not isinstance(output_keys, str):
                         # if view was updated, apply writes to channels
                         _apply_writes_from_view(checkpoint, channels, step_output)
-
-                # save end of step checkpoint
-                if (
-                    self.checkpointer is not None
-                    and self.checkpointer.at == CheckpointAt.END_OF_STEP
-                ):
-                    checkpoint = create_checkpoint(checkpoint, channels)
-                    self.checkpointer.put(config, checkpoint)
+                        # TODO remove
 
                 # interrupt if any channel written to is in interrupt list
                 if any(chan for chan, _ in pending_writes if chan in self.interrupt):
@@ -343,7 +352,6 @@ class Pregel(
                 self.checkpointer is not None
                 and self.checkpointer.at == CheckpointAt.END_OF_RUN
             ):
-                checkpoint = create_checkpoint(checkpoint, channels)
                 self.checkpointer.put(config, checkpoint)
 
     async def _atransform(
@@ -354,6 +362,7 @@ class Pregel(
         *,
         input_keys: Optional[Union[str, Sequence[str]]] = None,
         output_keys: Optional[Union[str, Sequence[str]]] = None,
+        checkpoint_id: Optional[str] = None,
     ) -> AsyncIterator[Union[dict[str, Any], Any]]:
         if config["recursion_limit"] < 1:
             raise ValueError("recursion_limit must be at least 1")
@@ -374,7 +383,11 @@ class Pregel(
         # copy nodes to ignore mutations during execution
         processes = {**self.nodes}
         # get checkpoint from saver, or create an empty one
-        checkpoint = await self.checkpointer.aget(config) if self.checkpointer else None
+        checkpoint = (
+            await self.checkpointer.aget(config, checkpoint_id)
+            if self.checkpointer
+            else None
+        )
         checkpoint = checkpoint or empty_checkpoint()
         # create channels from checkpoint
         async with AsyncChannelsManager(self.channels, checkpoint) as channels:
@@ -451,21 +464,27 @@ class Pregel(
                 if self.debug:
                     print_checkpoint(step, channels)
 
+                # save end of step checkpoint
+                checkpoint = create_checkpoint(checkpoint, channels)
+                if (
+                    self.checkpointer is not None
+                    and self.checkpointer.at == CheckpointAt.END_OF_STEP
+                ):
+                    await self.checkpointer.aput(config, checkpoint)
+
                 # yield current value and checkpoint view
-                if step_output := map_output(output_keys, pending_writes, channels):
+                if step_output := map_output(
+                    output_keys,
+                    pending_writes,
+                    channels,
+                    checkpoint if self.checkpointer is not None else None,
+                ):
                     yield step_output
                     # we can detect updates when output is multiple channels (ie. dict)
                     if not isinstance(output_keys, str):
                         # if view was updated, apply writes to channels
                         _apply_writes_from_view(checkpoint, channels, step_output)
-
-                # save end of step checkpoint
-                if (
-                    self.checkpointer is not None
-                    and self.checkpointer.at == CheckpointAt.END_OF_STEP
-                ):
-                    checkpoint = create_checkpoint(checkpoint, channels)
-                    await self.checkpointer.aput(config, checkpoint)
+                        # TODO remove
 
                 # interrupt if any channel written to is in interrupt list
                 if any(chan for chan, _ in pending_writes if chan in self.interrupt):
@@ -476,7 +495,6 @@ class Pregel(
                 self.checkpointer is not None
                 and self.checkpointer.at == CheckpointAt.END_OF_RUN
             ):
-                checkpoint = create_checkpoint(checkpoint, channels)
                 await self.checkpointer.aput(config, checkpoint)
 
     def invoke(
@@ -656,7 +674,7 @@ def _apply_writes(
     for chan, vals in pending_writes_by_channel.items():
         if chan in channels:
             channels[chan].update(vals)
-            checkpoint["channel_versions"][chan] += 1
+            checkpoint.channel_versions[chan] += 1
             updated_channels.add(chan)
         else:
             logger.warning(f"Skipping write for channel {chan} which has no readers")
@@ -670,6 +688,8 @@ def _apply_writes_from_view(
     checkpoint: Checkpoint, channels: Mapping[str, BaseChannel], values: dict[str, Any]
 ) -> None:
     for chan, value in values.items():
+        if chan in [c.value for c in ReservedChannels]:
+            continue
         if value == _read_channel(channels, chan):
             continue
 
@@ -677,7 +697,7 @@ def _apply_writes_from_view(
             f"Can't modify channel {chan} of type "
             f"{channels[chan].__class__.__name__}"
         )
-        checkpoint["channel_versions"][chan] += 1
+        checkpoint.channel_versions[chan] += 1
         channels[chan].update([values[chan]])
 
 
@@ -690,12 +710,11 @@ def _prepare_next_tasks(
     # Check if any processes should be run in next step
     # If so, prepare the values to be passed to them
     for name, proc in processes.items():
-        seen = checkpoint["versions_seen"][name]
+        seen = checkpoint.versions_seen[name]
         if isinstance(proc, ChannelInvoke):
             # If any of the channels read by this process were updated
             if any(
-                checkpoint["channel_versions"][chan] > seen[chan]
-                for chan in proc.triggers
+                checkpoint.channel_versions[chan] > seen[chan] for chan in proc.triggers
             ):
                 # If all channels subscribed by this process have been initialized
                 try:
@@ -715,10 +734,7 @@ def _prepare_next_tasks(
 
                 # update seen versions
                 seen.update(
-                    {
-                        chan: checkpoint["channel_versions"][chan]
-                        for chan in proc.triggers
-                    }
+                    {chan: checkpoint.channel_versions[chan] for chan in proc.triggers}
                 )
 
                 # skip if condition is not met
@@ -726,7 +742,7 @@ def _prepare_next_tasks(
                     tasks.append((proc, val, name))
         elif isinstance(proc, ChannelBatch):
             # If the channel read by this process was updated
-            if checkpoint["channel_versions"][proc.channel] > seen[proc.channel]:
+            if checkpoint.channel_versions[proc.channel] > seen[proc.channel]:
                 # Here we don't catch EmptyChannelError because the channel
                 # must be intialized if the previous `if` condition is true
                 val = channels[proc.channel].get()
@@ -734,7 +750,7 @@ def _prepare_next_tasks(
                     val = [{proc.key: v} for v in val]
 
                 tasks.append((proc, val, name))
-                seen[proc.channel] = checkpoint["channel_versions"][proc.channel]
+                seen[proc.channel] = checkpoint.channel_versions[proc.channel]
 
     return tasks
 

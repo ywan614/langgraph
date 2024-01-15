@@ -1,3 +1,4 @@
+from collections import defaultdict
 from typing import Optional
 
 from langchain_core.pydantic_v1 import Field
@@ -8,7 +9,9 @@ from langgraph.checkpoint.base import BaseCheckpointSaver, Checkpoint
 
 
 class MemorySaver(BaseCheckpointSaver):
-    storage: dict[str, Checkpoint] = Field(default_factory=dict)
+    storage: defaultdict[str, dict[str, Checkpoint]] = Field(
+        default_factory=lambda: defaultdict(dict)
+    )
 
     @property
     def config_specs(self) -> list[ConfigurableFieldSpec]:
@@ -23,8 +26,17 @@ class MemorySaver(BaseCheckpointSaver):
             ),
         ]
 
-    def get(self, config: RunnableConfig) -> Optional[Checkpoint]:
-        return self.storage.get(config["configurable"]["thread_id"], None)
+    def get(
+        self, config: RunnableConfig, id: Optional[str] = None
+    ) -> Optional[Checkpoint]:
+        checkpoints = self.storage[config["configurable"]["thread_id"]]
+        if checkpoints:
+            if id is None:
+                return checkpoints[max(checkpoints)]
+            else:
+                return checkpoints[id]
+        return None
 
     def put(self, config: RunnableConfig, checkpoint: Checkpoint) -> None:
-        return self.storage.update({config["configurable"]["thread_id"]: checkpoint})
+        checkpoints = self.storage[config["configurable"]["thread_id"]]
+        checkpoints[checkpoint.id] = checkpoint.copy(keep_ts=True)

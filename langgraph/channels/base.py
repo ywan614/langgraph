@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone
 from typing import (
     Any,
     AsyncGenerator,
@@ -86,9 +85,7 @@ def ChannelsManager(
 ) -> Generator[Mapping[str, BaseChannel], None, None]:
     """Manage channels for the lifetime of a Pregel invocation (multiple steps)."""
     # TODO use https://docs.python.org/3/library/contextlib.html#contextlib.ExitStack
-    empty = {
-        k: v.empty(checkpoint["channel_values"].get(k)) for k, v in channels.items()
-    }
+    empty = {k: v.empty(checkpoint.channel_values.get(k)) for k, v in channels.items()}
     try:
         yield {k: v.__enter__() for k, v in empty.items()}
     finally:
@@ -102,9 +99,7 @@ async def AsyncChannelsManager(
     checkpoint: Checkpoint,
 ) -> AsyncGenerator[Mapping[str, BaseChannel], None]:
     """Manage channels for the lifetime of a Pregel invocation (multiple steps)."""
-    empty = {
-        k: v.aempty(checkpoint["channel_values"].get(k)) for k, v in channels.items()
-    }
+    empty = {k: v.aempty(checkpoint.channel_values.get(k)) for k, v in channels.items()}
     try:
         yield {k: await v.__aenter__() for k, v in empty.items()}
     finally:
@@ -116,16 +111,10 @@ def create_checkpoint(
     checkpoint: Checkpoint, channels: Mapping[str, BaseChannel]
 ) -> Checkpoint:
     """Create a checkpoint for the given channels."""
-    checkpoint = Checkpoint(
-        v=1,
-        ts=datetime.now(timezone.utc).isoformat(),
-        channel_values=checkpoint["channel_values"],
-        channel_versions=checkpoint["channel_versions"],
-        versions_seen=checkpoint["versions_seen"],
-    )
+    checkpoint = checkpoint.copy()
     for k, v in channels.items():
         try:
-            checkpoint["channel_values"][k] = v.checkpoint()
+            checkpoint.channel_values[k] = v.checkpoint()
         except EmptyChannelError:
             pass
     return checkpoint
