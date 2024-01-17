@@ -407,7 +407,11 @@ content=').'
 content=''
 ```
 
-## When to Use
+## FAQ
+
+Below are a few commonly asked questions. If you have others, please open a pr with your question and we can add an answer to it.
+
+### Compared to LangChain Expression Language
 
 When should you use this versus [LangChain Expression Language](https://python.langchain.com/docs/expression_language/)?
 
@@ -415,6 +419,17 @@ If you need cycles.
 
 Langchain Expression Language allows you to easily define chains (DAGs) but does not have a good mechanism for adding in cycles.
 `langgraph` adds that syntax.
+
+### Compared to Agent Executor
+
+How is the high level method `create_agent_executor` different from [`AgentExecutor`](https://python.langchain.com/docs/modules/agents/concepts#agentexecutor) in `langchain.agents` and which one shall devs prefer for single agent building?
+
+They are very similar. 
+`AgentExecutor` currently has more built in functionality and is more tested, so if you do NOT care about modifying the agent runtime you should prefer that.
+
+However, `create_agent_executor` is built in LangGraph. 
+This makes it much easier to modify, because you can look at the underlying code (<90 LOC) and modify that.
+If you can about being able to modify and control the agent runtime, you should use `create_agent_executor` because it creates an easier onramp onto more advanced agent runtimes.
 
 ## Examples
 
