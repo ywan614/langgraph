@@ -98,25 +98,16 @@ model = model.bind_functions(functions)
 
 ### Define the agent state
 
-The main type of graph in `langgraph` is the `StatefulGraph`.
-This graph is parameterized by a state object that it passes around to each node.
+Graphs in LangGraph can be parameterized by a state object that is passed around to each node.
 Each node then returns operations to update that state.
 These operations can either SET specific attributes on the state (e.g. overwrite the existing values) or ADD to the existing attribute.
 Whether to set or add is denoted by annotating the state object you construct the graph with.
 
-For this example, the state we will track will just be a list of messages.
-We want each node to just add messages to that list.
-Therefore, we will use a `TypedDict` with one key (`messages`) and annotate it so that the `messages` attribute is always added to.
+There exists a generic `StateGraph` class which allows for an arbitrary state. 
+There also exists a more specific `MessageGraph` class which represents state as a list of messages.
+This means that a list of messages is passed around, and each node returns either a message or list of messages that gets added to this list.
+We will use this `MessageGraph` for our example.
 
-```python
-from typing import TypedDict, Annotated, Sequence
-import operator
-from langchain_core.messages import BaseMessage
-
-
-class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], operator.add]
-```
 
 ### Define the nodes
 
@@ -159,8 +150,7 @@ def should_continue(state):
 def call_model(state):
     messages = state['messages']
     response = model.invoke(messages)
-    # We return a list, because this will get added to the existing list
-    return {"messages": [response]}
+    return response
 
 # Define the function to execute tools
 def call_tool(state):
@@ -177,8 +167,7 @@ def call_tool(state):
     response = tool_executor.invoke(action)
     # We use the response to create a FunctionMessage
     function_message = FunctionMessage(content=str(response), name=action.tool)
-    # We return a list, because this will get added to the existing list
-    return {"messages": [function_message]}
+    return function_message
 ```
 
 ### Define the graph
@@ -186,9 +175,9 @@ def call_tool(state):
 We can now put it all together and define the graph!
 
 ```python
-from langgraph.graph import StateGraph, END
+from langgraph.graph import MessageGraph, END
 # Define a new graph
-workflow = StateGraph(AgentState)
+workflow = MessageGraph()
 
 # Define the two nodes we will cycle between
 workflow.add_node("agent", call_model)
@@ -238,7 +227,7 @@ This runnable accepts a list of messages.
 ```python
 from langchain_core.messages import HumanMessage
 
-inputs = {"messages": [HumanMessage(content="what is the weather in sf")]}
+inputs = [HumanMessage(content="what is the weather in sf")]
 app.invoke(inputs)
 ```
 
@@ -254,7 +243,7 @@ LangGraph has support for several different types of streaming.
 One of the benefits of using LangGraph is that it is easy to stream output as it's produced by each node.
 
 ```python
-inputs = {"messages": [HumanMessage(content="what is the weather in sf")]}
+inputs = [HumanMessage(content="what is the weather in sf")]
 for output in app.stream(inputs):
     # stream() yields dictionaries with output keyed by node name
     for key, value in output.items():
@@ -297,7 +286,7 @@ In this case only the "agent" node produces LLM tokens.
 In order for this to work properly, you must be using an LLM that supports streaming as well as have set it when constructing the LLM (e.g. `ChatOpenAI(model="gpt-3.5-turbo-1106", streaming=True)`)
 
 ```python
-inputs = {"messages": [HumanMessage(content="what is the weather in sf")]}
+inputs = [HumanMessage(content="what is the weather in sf")]
 async for output in app.astream_log(inputs, include_types=["llm"]):
     # astream_log() yields the requested logs (here LLMs) in JSONPatch format
     for op in output.ops:
@@ -416,6 +405,17 @@ Langchain Expression Language allows you to easily define chains (DAGs) but does
 
 ## Examples
 
+### Streaming Tokens
+
+Sometimes language models take a while to respond and you may want to stream tokens to end users.
+For a guide on how to do this, see [this documentation](https://github.com/langchain-ai/langgraph/blob/main/examples/streaming-tokens.ipynb)
+
+### Async
+
+If you are running LangGraph in async workflows, you may want to create the nodes to be async by default.
+In order for a walkthrough on how to do that, see [this documentation](https://github.com/langchain-ai/langgraph/blob/main/examples/async.ipynb)
+
+
 ### ChatAgentExecutor: with function calling
 
 This agent executor takes a list of messages as input and outputs a list of messages.
@@ -463,15 +463,6 @@ It can often be tough to evaluation chat bots in multi-turn situations. One way 
 
 - [Chat bot evaluation as multi-agent simulation](https://github.com/langchain-ai/langgraph/blob/main/examples/chatbot-simulation-evaluation/agent-simulation-evaluation.ipynb): How to simulate a dialogue between a "virtual user" and your chat bot
 
-### Async
-
-If you are running LangGraph in async workflows, you may want to create the nodes to be async by default.
-In order for a walkthrough on how to do that, see [this documentation](https://github.com/langchain-ai/langgraph/blob/main/examples/async.ipynb)
-
-### Streaming Tokens
-
-Sometimes language models take a while to respond and you may want to stream tokens to end users.
-For a guide on how to do this, see [this documentation](https://github.com/langchain-ai/langgraph/blob/main/examples/streaming-tokens.ipynb)
 
 ## Documentation
 
@@ -619,6 +610,17 @@ It only has one argument:
 - `key`: The name of the node that, when called, will return the results of calling it as the final output
 
 Note: This does not need to be called if at any point you previously created an edge (conditional or normal) to `END`
+
+### MessageGraph
+
+```python
+from langgraph.graph import MessageGraph
+
+graph = MessageGraph()
+```
+
+This has the same interface as `StateGraph` with the exception that it is constrained to representing the state as a list of messages.
+Each node should return either a message or list of messages that will get added to this list of messages.
 
 ### Graph
 
