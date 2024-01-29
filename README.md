@@ -136,8 +136,7 @@ import json
 from langchain_core.messages import FunctionMessage
 
 # Define the function that determines whether to continue or not
-def should_continue(state):
-    messages = state['messages']
+def should_continue(messages):
     last_message = messages[-1]
     # If there is no function call, then we finish
     if "function_call" not in last_message.additional_kwargs:
@@ -147,14 +146,12 @@ def should_continue(state):
         return "continue"
 
 # Define the function that calls the model
-def call_model(state):
-    messages = state['messages']
+def call_model(messages):
     response = model.invoke(messages)
     return response
 
 # Define the function to execute tools
-def call_tool(state):
-    messages = state['messages']
+def call_tool(messages):
     # Based on the continue condition
     # we know the last message involves a function call
     last_message = messages[-1]
