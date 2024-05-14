@@ -54,7 +54,7 @@ build-docs:
 	poetry run mkdocs build --clean -f docs/mkdocs.yml --strict
 
 serve-docs: build-docs
-	poetry run mkdocs serve -f docs/mkdocs.yml
+	poetry run mkdocs serve -f docs/mkdocs.yml -w langgraph
 
 ######################
 # HELP
