@@ -11,6 +11,7 @@ repository = "https://www.github.com/langchain-ai/langgraph"
 python = ">=3.9.0,<4.0"
 langchain-core = ">=0.2,<0.3"
 uuid6 = "^2024.1.12"
+automerge = "1.0.0rc1"
 
 
 [tool.poetry.group.test.dependencies]
